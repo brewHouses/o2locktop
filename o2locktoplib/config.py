@@ -1,6 +1,6 @@
 VERSION = "o2locktop 1.0.9"
 VERSION_SETUP = "1.0.9"
-clear = True
+clear = False
 interval = 5
 del_unfreshed_node = False
 ROWS = 0

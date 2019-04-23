@@ -25,6 +25,7 @@ _debug = False
 
 LOCK_LEVEL_PR = 0
 LOCK_LEVEL_EX = 1
+KEEP_HISTORY_CNT = 2
 
 
 class LockName:
@@ -132,10 +133,10 @@ class Shot:
         return self.name.inode_type
 
 class Lock():
-    def __init__(self, node, keep_history_cnt=2):
+    def __init__(self, node):
         self._node = node
-        self._shots= []
-        self.keep_history_cnt = keep_history_cnt
+        self._shots= [None, None]
+        self.keep_history_cnt = KEEP_HISTORY_CNT
         self.refresh_flag = False
 
     @property
@@ -198,8 +199,12 @@ class Lock():
             return delta_time, delta_num, delta_time//delta_num
         return 0, 0, 0
 
+    '''
     def has_delta(self):
         return len(self._shots) >= 2
+    '''
+    def has_delta(self):
+        return self._shots[0] != None and self._shots[1] != None
 
     def append(self, shot):
         if not hasattr(self, "_name"):
@@ -207,11 +212,12 @@ class Lock():
         else:
             assert(self._name == shot.name)
 
-        if self.keep_history_cnt >= 2 and len(self._shots) >= self.keep_history_cnt :
-            #print(len(self._shots))
-            del(self._shots[0])
-
-        self._shots.append(shot)
+        if self._shots[0] == None:
+            self._shots[0] = shot
+        else:
+            #del self._shots[0]
+            self._shots[0] = self._shots[1]
+            self._shots[1] = shot
         self.refresh_flag = True
 
         if not _debug:
@@ -585,11 +591,14 @@ class Node:
             return
         shot_name = shot.name
         if shot_name not in self._locks:
-            self._locks[shot_name] = Lock(self)
-        lock = self._locks[shot_name]
-        lock.append(shot)
-        self.lock_space.add_lock_name(shot_name)
-        self.lock_space.add_lock_type(shot_name)
+            lock_tmp = Lock(self)
+            lock_tmp.append(shot)
+            self._locks[shot_name] = lock_tmp
+        else:
+            self._locks[shot_name].append(shot)
+        self._lock_space.add_lock_name(shot_name)
+        self._lock_space.add_lock_type(shot_name)
+
     '''
     def process_one_shot(self, raw_string):
         shot  = Shot(raw_string)
@@ -629,13 +638,17 @@ class Node:
             self._locks[key].refresh_flag = False
 
     def run_once(self):
+        now = time.time()
         if self.is_local_node():
             _cat = cat.gen_cat('local', self.lock_space.name)
         else:
             _cat = cat.gen_cat('ssh', self.lock_space.name, self.name)
         raw_shot_strs = _cat.get()
+        print("cat takes {0}s".format(time.time() - now))
+        now = time.time()
         for i in raw_shot_strs:
             self.process_one_shot(i)
+        print("process the cat file takes {0}s".format(time.time() - now))
         if config.del_unfreshed_node:
             self.del_unfreshed_node()
         else:
@@ -692,6 +705,7 @@ class LockSpace:
                     th.start()
                 for th in self._thread_list:
                     th.join()
+                self.reduce_lock_name()
             lock_space_report = self.report_once()
             printer_queue.put(
                             {'msg_type':'new_content',
@@ -740,9 +754,12 @@ class LockSpace:
 
     def add_lock_name(self, lock_name):
         with self._mutex:
-            if lock_name in self._lock_names:
-                return
+            #if lock_name in self._lock_names:
+            #    return
             self._lock_names.append(lock_name)
+
+    def reduce_lock_name(self):
+        self._lock_names = list(set(self._lock_names))
 
     def add_lock_type(self, lock_name):
         with self._mutex:

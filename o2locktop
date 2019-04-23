@@ -264,6 +264,10 @@ def local_cmd_test():
 def main():
     args = parse_args()
 
+    # can also use dup2
+    tmp_stderr = TemporaryFile('w+t')
+    sys.stderr = tmp_stderr
+
     @retry(10)
     def sigcont_handler(signum, frame):
         keyboard.set_terminal()
@@ -304,10 +308,6 @@ def main():
 
     if args["mode"] == "local":
         nodes = None
-
-    # can also use dup2
-    tmp_stderr = TemporaryFile('w+t')
-    sys.stderr = tmp_stderr
 
     for p in process_list:
         p.join()
