@@ -28,10 +28,10 @@ LOCK_LEVEL_PR = 0
 LOCK_LEVEL_EX = 1
 KEEP_HISTORY_CNT = 2
 
-sort_finished_semaphore = threading.Semaphore(1)
-run_once_finished_event_semaphore = threading.Semaphore(0)
+#sort_finished_semaphore = threading.Semaphore(1)
+#run_once_finished_semaphore = threading.Semaphore(0)
 #sort_finished_semaphore = multiprocessing.Semaphore(1)
-#run_once_finished_event_semaphore = multiprocessing.Semaphore(0)
+#run_once_finished_semaphore = multiprocessing.Semaphore(0)
 
 
 class LockName:
@@ -643,28 +643,22 @@ class Node:
                     self._locks.pop(key)
             self._locks[key].refresh_flag = False
 
-    def process_all_slot_worker(self, raw_slot_strs, run_once_finished_event_semaphore):
+    def process_all_slot_worker(self, raw_slot_strs, run_once_finished_semaphore):
         print("the length of the cat data is {}".format(len(raw_slot_strs)))
         for i in raw_slot_strs:
             self.process_one_shot(i)
-        #print(self._lock_space._lock_names)
-        #time.sleep(10)
-        #time.sleep(5)
-        run_once_finished_event_semaphore.release()
+        run_once_finished_semaphore.release()
 
-    def run_once_consumer(self, sort_finished_semaphore, run_once_finished_event_semaphore):
+    def run_once_consumer(self, sort_finished_semaphore, run_once_finished_semaphore):
         while True:
-            # 这儿阻塞一下
             raw_slot_strs = yield ''
             sort_finished_semaphore.acquire()
             if not raw_slot_strs:
                 return
             print("got the data")
-            consumer_process = threading.Thread(target=self.process_all_slot_worker, args=(raw_slot_strs, run_once_finished_event_semaphore))
+            consumer_process = threading.Thread(target=self.process_all_slot_worker, args=(raw_slot_strs, run_once_finished_semaphore))
             consumer_process.daemon = True
             consumer_process.start()
-            #run_once_finished_event_semaphore.release()
-            #consumer_process.join()
 
 
     def run_once(self, consumer):
@@ -729,8 +723,15 @@ class LockSpace:
     def run(self, printer_queue, interval=5, ):
         self._lock_names = []
         self._thread_list = []
+        self.run_once_finished_semaphore = []
+        self.sort_finished_semaphore = []
+        num_of_len = len(self._nodes)
         for node_name, node in self._nodes.items():
-            th = threading.Thread(target=node.run_once, args=(node.run_once_consumer(sort_finished_semaphore, run_once_finished_event_semaphore),))
+            temp_run_once_finished_semaphore = threading.Semaphore(0)
+            self.run_once_finished_semaphore.append(temp_run_once_finished_semaphore)
+            temp_sort_finished_semaphore = threading.Semaphore(1)
+            self.sort_finished_semaphore.append(temp_sort_finished_semaphore)
+            th = threading.Thread(target=node.run_once, args=(node.run_once_consumer(temp_sort_finished_semaphore, temp_run_once_finished_semaphore),))
             self._thread_list.append(th)
         for th in self._thread_list:
             th.start()
@@ -739,8 +740,10 @@ class LockSpace:
         #    th.join()
         self.reduce_lock_name()
         while not self.should_stop:
+            print("the length of semaphore list is {}".format(len(self.run_once_finished_semaphore)))
             print("6666666666666666666666666666666666666666666")
-            run_once_finished_event_semaphore.acquire()
+            for semaphore in self.run_once_finished_semaphore:
+                semaphore.acquire()
             #self._lock_names = []
             start = time.time()
             print("6666666666666666666666666666666666666666666")
@@ -753,7 +756,9 @@ class LockSpace:
                             'detailed':lock_space_report['detailed'],
                             'rows':config.ROWS}
                             )
-            sort_finished_semaphore.release()
+            print("the num of locke to release is {}".format(num_of_len))
+            for semaphore in self.sort_finished_semaphore:
+                semaphore.release()
             end = time.time()
             '''
             if not self.first_run:
@@ -817,6 +822,8 @@ class LockSpace:
 
 
     def report_once(self):
+        print("??????????????????????????????????????????????{}".format(len(self._lock_names)))
+        self.reduce_lock_name()
         print("??????????????????????????????????????????????{}".format(len(self._lock_names)))
         lock_names = self._lock_names
         lsg = LockSetGroup(self._max_sys_inode_num, self)
