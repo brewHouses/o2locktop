@@ -265,8 +265,8 @@ def main():
     args = parse_args()
 
     # can also use dup2
-    tmp_stderr = TemporaryFile('w+t')
-    sys.stderr = tmp_stderr
+    #tmp_stderr = TemporaryFile('w+t')
+    #sys.stderr = tmp_stderr
 
     @retry(10)
     def sigcont_handler(signum, frame):
@@ -322,7 +322,7 @@ def main():
                                         args=(lock_space_str, max_sys_inode_num, debug, display_len, nodes, printer_queue)
                                         )
 
-    lock_space_process.daemon = True
+    #lock_space_process.daemon = True
     printer_process.start()
     lock_space_process.start()
 

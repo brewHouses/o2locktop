@@ -3,6 +3,7 @@
 
 
 from multiprocessing.dummy import Pool as ThreadPool
+import multiprocessing
 import sys
 import signal
 import threading
@@ -26,6 +27,11 @@ _debug = False
 LOCK_LEVEL_PR = 0
 LOCK_LEVEL_EX = 1
 KEEP_HISTORY_CNT = 2
+
+sort_finished_semaphore = threading.Semaphore(1)
+run_once_finished_event_semaphore = threading.Semaphore(0)
+#sort_finished_semaphore = multiprocessing.Semaphore(1)
+#run_once_finished_event_semaphore = multiprocessing.Semaphore(0)
 
 
 class LockName:
@@ -637,22 +643,53 @@ class Node:
                     self._locks.pop(key)
             self._locks[key].refresh_flag = False
 
-    def run_once(self):
-        now = time.time()
-        if self.is_local_node():
-            _cat = cat.gen_cat('local', self.lock_space.name)
-        else:
-            _cat = cat.gen_cat('ssh', self.lock_space.name, self.name)
-        raw_shot_strs = _cat.get()
-        print("cat takes {0}s".format(time.time() - now))
-        now = time.time()
-        for i in raw_shot_strs:
+    def process_all_slot_worker(self, raw_slot_strs, run_once_finished_event_semaphore):
+        print("the length of the cat data is {}".format(len(raw_slot_strs)))
+        for i in raw_slot_strs:
             self.process_one_shot(i)
-        print("process the cat file takes {0}s".format(time.time() - now))
-        if config.del_unfreshed_node:
-            self.del_unfreshed_node()
+        #print(self._lock_space._lock_names)
+        #time.sleep(10)
+        #time.sleep(5)
+        run_once_finished_event_semaphore.release()
+
+    def run_once_consumer(self, sort_finished_semaphore, run_once_finished_event_semaphore):
+        while True:
+            # 这儿阻塞一下
+            raw_slot_strs = yield ''
+            sort_finished_semaphore.acquire()
+            if not raw_slot_strs:
+                return
+            print("got the data")
+            consumer_process = threading.Thread(target=self.process_all_slot_worker, args=(raw_slot_strs, run_once_finished_event_semaphore))
+            consumer_process.daemon = True
+            consumer_process.start()
+            #run_once_finished_event_semaphore.release()
+            #consumer_process.join()
+
+
+    def run_once(self, consumer):
+        if util.PY2:
+            consumer.next()
         else:
-            self.add_last_slot_to_unfreshed_node()
+            consumer.__next__()
+        while True:
+            print("----------------------------------------------")
+            now = time.time()
+            if self.is_local_node():
+                _cat = cat.gen_cat('local', self.lock_space.name)
+            else:
+                _cat = cat.gen_cat('ssh', self.lock_space.name, self.name)
+                #time.sleep(5)
+            raw_slot_strs = _cat.get()
+            print("cat takes {0}s".format(time.time() - now))
+            consumer.send(raw_slot_strs)
+        '''
+        to_sleep = 5 - (time.time() - now)
+        if to_sleep > 0:
+            time.sleep(to_sleep)
+        '''
+        consumer.close()
+        
 
     def __contains__(self, item):
         return item in self._locks
@@ -689,37 +726,46 @@ class LockSpace:
     def stop(self):
         self.should_stop = True
 
-    def run(self, printer_queue, sync=False, interval=5, ):
+    def run(self, printer_queue, interval=5, ):
+        self._lock_names = []
+        self._thread_list = []
+        for node_name, node in self._nodes.items():
+            th = threading.Thread(target=node.run_once, args=(node.run_once_consumer(sort_finished_semaphore, run_once_finished_event_semaphore),))
+            self._thread_list.append(th)
+        for th in self._thread_list:
+            th.start()
+        print("the length of thread list is {}".format(len(self._thread_list)))
+        #for th in self._thread_list:
+        #    th.join()
+        self.reduce_lock_name()
         while not self.should_stop:
-            self._lock_names = []
+            print("6666666666666666666666666666666666666666666")
+            run_once_finished_event_semaphore.acquire()
+            #self._lock_names = []
             start = time.time()
-            if sync:
-                for node_name, node in self._nodes.items():
-                    node.run_once()
-            else:
-                self._thread_list = []
-                for node_name, node in self._nodes.items():
-                    th = threading.Thread(target=node.run_once)
-                    self._thread_list.append(th)
-                for th in self._thread_list:
-                    th.start()
-                for th in self._thread_list:
-                    th.join()
-                self.reduce_lock_name()
+            print("6666666666666666666666666666666666666666666")
+            self.reduce_lock_name()
             lock_space_report = self.report_once()
+            #time.sleep(10)
             printer_queue.put(
                             {'msg_type':'new_content',
                             'simple':lock_space_report['simple'],
                             'detailed':lock_space_report['detailed'],
                             'rows':config.ROWS}
                             )
+            sort_finished_semaphore.release()
             end = time.time()
+            '''
             if not self.first_run:
                 new_interval = interval - (end - start)
                 if new_interval > 0:
                     util.sleep(new_interval)
             else:
                 self.first_run = False
+            '''
+            new_interval = interval - (end - start)
+            if new_interval > 0:
+                util.sleep(new_interval)
 
     @property
     def name(self):
@@ -757,6 +803,7 @@ class LockSpace:
             #if lock_name in self._lock_names:
             #    return
             self._lock_names.append(lock_name)
+            #print(len(self._lock_names))
 
     def reduce_lock_name(self):
         self._lock_names = list(set(self._lock_names))
@@ -770,6 +817,7 @@ class LockSpace:
 
 
     def report_once(self):
+        print("??????????????????????????????????????????????{}".format(len(self._lock_names)))
         lock_names = self._lock_names
         lsg = LockSetGroup(self._max_sys_inode_num, self)
         for lock_name in lock_names:
